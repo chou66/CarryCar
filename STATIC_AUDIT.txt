@@ -1,0 +1,15 @@
+[OK] FDCAN exact 500k
+[OK] FDCAN PB12 RX / PB13 TX AF9
+[OK] fdcan2_UserInit called
+[OK] USART3 PB10 TX / PE15 RX
+[OK] UART4 PC10/PC11
+[OK] UART5 PC12/PD2
+[OK] Servo PB4/PE3 TIM3
+[OK] Position completion uses CAN status cache
+[OK] Manipulator calibration guard is runtime C
+[OK] HMI exact page3 mode select
+[OK] HMI debug task object preserved
+[OK] Dynamic replan stops mid-edge motion
+[OK] No CAN printf/stdio
+[OK] No automatic motor motion at boot
+[OK] No formatted stdio in compiled project modules

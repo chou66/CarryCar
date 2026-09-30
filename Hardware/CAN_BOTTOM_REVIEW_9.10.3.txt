@@ -1,0 +1,66 @@
+9.10.3 CAN 底层复查说明
+======================
+
+本次原则
+--------
+只改确定存在的问题，或删除上一版尚未使用的复杂逻辑。
+不改 main.c，不改 chassis.c，不改麦轮运动学，不改变线上 CAN 协议。
+
+实际修改
+--------
+1. 修复 RX FIFO 正常读空后留下 HAL_FDCAN_ERROR_FIFO_EMPTY 的问题
+   原写法：
+       while (true) {
+           if (HAL_FDCAN_GetRxMessage(...) != HAL_OK) break;
+       }
+
+   STM32G4 HAL 在 FIFO 已空时调用 HAL_FDCAN_GetRxMessage() 会：
+       hfdcan->ErrorCode |= HAL_FDCAN_ERROR_FIFO_EMPTY;
+
+   新写法：
+       while (HAL_FDCAN_GetRxFifoFillLevel(...) > 0U) {
+           if (HAL_FDCAN_GetRxMessage(...) != HAL_OK) break;
+       }
+
+   这样正常把 FIFO 抽空不会制造假的 HAL 错误状态。
+
+2. Cgi_TF 不再作为“立即失败”
+   手册 5.5.15：
+   - Cgi_TF：堵转检测标志，低速 + 高电流条件满足即可置位
+   - Cgp_TF：上述条件持续超过设定时间后，触发堵转保护
+
+   因此只把 Cgp_TF 作为明确的硬故障。
+   Cgi_TF 即使短暂出现，也交给后续 Prf_TF/超时机制判断，减少误停止。
+
+3. 删除上一版未使用的 ACK 等待 API
+   删除：
+   - control_response_valid
+   - emm_clear_control_response()
+   - emm_get_control_response_after()
+
+   保留：
+   - 02/E2/EE/9F 通用返回码解析
+   - last_control_code
+   - last_control_response
+   - control_response_ms
+   - E2/EE -> control_error 锁存
+
+   这样仍然能正确识别和调试电机应答，但不为了当前没有采用的
+   “每条命令必须等待 ACK”策略增加额外接口和状态。
+
+明确未修改
+----------
+- 四个 FD 之间仍按原状态机留 3ms 间隔
+- 不强制等待 FD 02 后再发送下一轮
+- FF 同步启动逻辑不变
+- 0x3A Prf_TF 到位判断不变
+- FDCAN AutoRetransmission 保持现状
+- CAN 硬件过滤策略保持现状
+- main.c / chassis.c / mecanum_kinematics.c 均未修改
+
+暂不修改但已记录
+----------------
+0x36/0x37 的协议数据是“1 字节符号 + uint32_t 幅值”，理论范围超过 int32_t。
+当前工程仍保存为 int32_t。这个边界在累计非常多圈后才会出现；
+直接改成 int64_t 会在 32 位 MCU 上引入非原子读写问题，因此本轮不为了
+理论完整性扩大改动，等真正要用 0x36 做长期里程计时再单独设计。

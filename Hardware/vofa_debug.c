@@ -1,0 +1,798 @@
+#include "vofa_debug.h"
+#include "usart.h"
+#include "app_uart.h"
+#include "hwt101_uart.h"
+#include "can.h"
+#include "emm_v5.h"
+#include "servo.h"
+#include "chassis.h"
+#include "chassis_config.h"
+#include "chassis_motion.h"
+#include "navigation.h"
+#include "map_graph.h"
+#include "robot_config.h"
+
+#define RX_LEN 7U
+
+typedef union {
+    struct {
+        float ch[10];
+        uint32_t tail;
+    } p;
+    uint8_t raw[44];
+} VofaPacket;
+
+static volatile uint8_t rx_i;
+static uint8_t rx[RX_LEN];
+static volatile uint8_t cmd_ready;
+static volatile uint8_t cmd_v, p1_v, p2_v, p3_v, p4_v;
+static uint8_t last_cmd, last_result;
+static uint32_t last_tx_ms;
+static VofaPacket txp;
+
+/* Independent chassis object used only by this bench/debug build.
+ * It validates the same chassis_motion -> chassis -> mecanum stack
+ * that navigation will use later.
+ */
+static Chassis s_debug_chassis;
+static uint8_t formal_motion_active;
+
+/*
+ * Navigation bench objects.
+ * This stage intentionally bypasses HMI only; it DOES use the real:
+ *   MapGraph -> Dijkstra -> Navigation -> chassis_motion -> chassis -> CAN
+ * path that the final project depends on.
+ */
+static Navigation_t s_debug_nav;
+static uint8_t debug_nav_initialized;
+static uint8_t debug_edge_active;
+
+/* Edge execution phases. */
+#define DEBUG_EDGE_IDLE                    0U
+#define DEBUG_EDGE_TRANSLATING             1U
+#define DEBUG_EDGE_SETTLE_AFTER_TRANSLATE  2U
+#define DEBUG_EDGE_YAW_CORRECTING          3U
+#define DEBUG_EDGE_SETTLE_AFTER_YAW        4U
+
+static uint8_t debug_edge_phase;
+static uint32_t debug_settle_until_ms;
+static uint32_t debug_yaw_correct_start_ms;
+static int8_t debug_yaw_start_sign;
+static uint8_t debug_yaw_velocity_active;
+
+static uint8_t valid_id(uint8_t id)
+{
+    return (id >= 1U && id <= 6U) ? 1U : 0U;
+}
+
+static void stop_all(void)
+{
+    uint8_t id;
+    for (id = 1U; id <= 6U; ++id)
+        Emm_V5_Stop_Now(id, false);
+}
+
+
+static void chassis_enable(uint8_t enable)
+{
+    uint8_t id;
+
+    for (id = 1U; id <= 4U; ++id) {
+        Emm_V5_En_Control(id, enable ? true : false, false);
+        HAL_Delay(3U);
+    }
+}
+
+/*
+ * Send all four wheel velocity commands with the synchronization flag set,
+ * then issue one synchronous-start command.  This prevents the first wheel
+ * from starting noticeably earlier than the fourth wheel during mecanum tests.
+ */
+static void chassis_velocity_sync(uint8_t d1, uint8_t d2,
+                                  uint8_t d3, uint8_t d4,
+                                  uint16_t rpm, uint8_t acc)
+{
+    if (rpm > VOFA_CHASSIS_MAX_RPM)
+        rpm = VOFA_CHASSIS_MAX_RPM;
+
+    Emm_V5_Vel_Control(1U, d1, rpm, acc, true);
+    HAL_Delay(3U);
+    Emm_V5_Vel_Control(2U, d2, rpm, acc, true);
+    HAL_Delay(3U);
+    Emm_V5_Vel_Control(3U, d3, rpm, acc, true);
+    HAL_Delay(3U);
+    Emm_V5_Vel_Control(4U, d4, rpm, acc, true);
+    HAL_Delay(3U);
+
+    Emm_V5_Synchronous_motion(0U);
+}
+
+static void chassis_stop_sync(void)
+{
+    Emm_V5_Stop_Now(1U, true);
+    HAL_Delay(3U);
+    Emm_V5_Stop_Now(2U, true);
+    HAL_Delay(3U);
+    Emm_V5_Stop_Now(3U, true);
+    HAL_Delay(3U);
+    Emm_V5_Stop_Now(4U, true);
+    HAL_Delay(3U);
+
+    Emm_V5_Synchronous_motion(0U);
+}
+
+
+static float debug_absf(float x)
+{
+    return (x >= 0.0f) ? x : -x;
+}
+
+static int8_t debug_signf(float x)
+{
+    if (x > 0.0f) return 1;
+    if (x < 0.0f) return -1;
+    return 0;
+}
+
+/*
+ * Commit the just-finished physical edge to Navigation only AFTER
+ * translation and optional HWT101 heading correction are complete.
+ */
+static void debug_commit_edge(void)
+{
+    debug_edge_active = 0U;
+    debug_edge_phase = DEBUG_EDGE_IDLE;
+
+    if (!Navigation_EdgeReached(&s_debug_nav))
+    {
+        Navigation_Abort(&s_debug_nav);
+        last_result = 7U;
+        return;
+    }
+
+    if (Navigation_IsDone(&s_debug_nav))
+        last_result = 6U;
+}
+
+static uint8_t debug_nav_is_running(void)
+{
+    return (debug_nav_initialized &&
+            Navigation_GetState(&s_debug_nav) == NAV_STATE_RUNNING) ? 1U : 0U;
+}
+
+static void debug_nav_abort(void)
+{
+    if (debug_yaw_velocity_active)
+    {
+        chassis_stop_sync();
+        debug_yaw_velocity_active = 0U;
+    }
+
+    if (debug_nav_initialized)
+        Navigation_Abort(&s_debug_nav);
+
+    debug_edge_active = 0U;
+    debug_edge_phase = DEBUG_EDGE_IDLE;
+    debug_settle_until_ms = 0U;
+    debug_yaw_correct_start_ms = 0U;
+    debug_yaw_start_sign = 0;
+}
+
+/*
+ * Execute one Dijkstra edge at a time.
+ *
+ * Map coordinates:
+ *   +X = right
+ *   +Y = forward
+ *
+ * Example:
+ *   1 -> 2 : dx=+0.45, dy=0      (strafe right)
+ *   1 -> 4 : dx=0,     dy=+0.45  (forward)
+ */
+static void debug_navigation_update(uint32_t now_ms)
+{
+    uint8_t from_node;
+    uint8_t to_node;
+    float dx;
+    float dy;
+    float yaw_error_deg;
+    int8_t yaw_sign;
+    Hwt101 *imu = AppUart_GetImu();
+
+    if (!debug_nav_initialized || formal_motion_active)
+        return;
+
+    if (debug_edge_active)
+    {
+        if (debug_edge_phase == DEBUG_EDGE_TRANSLATING)
+        {
+            if (chassis_motion_failed(&s_debug_chassis))
+            {
+                debug_nav_abort();
+                last_result = 8U;
+                return;
+            }
+
+            if (chassis_motion_done(&s_debug_chassis))
+            {
+                debug_edge_phase = DEBUG_EDGE_SETTLE_AFTER_TRANSLATE;
+                debug_settle_until_ms = now_ms + VOFA_NAV_YAW_SETTLE_MS;
+            }
+
+            return;
+        }
+
+        if (debug_edge_phase == DEBUG_EDGE_SETTLE_AFTER_TRANSLATE)
+        {
+            if ((int32_t)(now_ms - debug_settle_until_ms) < 0)
+                return;
+
+            if (!hwt101_is_fresh(imu, now_ms, VOFA_NAV_IMU_TIMEOUT_MS))
+            {
+                last_result = 9U;
+                return;
+            }
+
+            yaw_error_deg = hwt101_yaw_relative_deg(imu);
+
+            if (debug_absf(yaw_error_deg) <= VOFA_NAV_YAW_DEADBAND_DEG)
+            {
+                debug_commit_edge();
+                return;
+            }
+
+            /*
+             * A very large error usually means the robot was physically
+             * disturbed or IMU data is wrong. Do not start an uncontrolled
+             * correction in that condition.
+             */
+            if (debug_absf(yaw_error_deg) > VOFA_NAV_YAW_MAX_START_DEG)
+            {
+                debug_nav_abort();
+                last_result = 11U;
+                return;
+            }
+
+            debug_yaw_start_sign = debug_signf(yaw_error_deg);
+            debug_yaw_correct_start_ms = now_ms;
+
+            /*
+             * Positive relative yaw means the chassis drifted CCW,
+             * so correct CW: all EMM direction bits = 0.
+             *
+             * Negative relative yaw means the chassis drifted CW,
+             * so correct CCW: all EMM direction bits = 1.
+             */
+            if (yaw_error_deg > 0.0f)
+            {
+                chassis_velocity_sync(0U, 0U, 0U, 0U,
+                                      VOFA_NAV_YAW_CORRECT_RPM,
+                                      VOFA_NAV_YAW_CORRECT_ACC);
+            }
+            else
+            {
+                chassis_velocity_sync(1U, 1U, 1U, 1U,
+                                      VOFA_NAV_YAW_CORRECT_RPM,
+                                      VOFA_NAV_YAW_CORRECT_ACC);
+            }
+
+            debug_yaw_velocity_active = 1U;
+            debug_edge_phase = DEBUG_EDGE_YAW_CORRECTING;
+            last_result = 10U;
+            return;
+        }
+
+        if (debug_edge_phase == DEBUG_EDGE_YAW_CORRECTING)
+        {
+            /*
+             * Never allow open-loop rotation to continue if IMU frames stop.
+             */
+            if (!hwt101_is_fresh(imu, now_ms, VOFA_NAV_IMU_TIMEOUT_MS))
+            {
+                if (debug_yaw_velocity_active)
+                {
+                    chassis_stop_sync();
+                    debug_yaw_velocity_active = 0U;
+                }
+
+                debug_nav_abort();
+                last_result = 9U;
+                return;
+            }
+
+            yaw_error_deg = hwt101_yaw_relative_deg(imu);
+            yaw_sign = debug_signf(yaw_error_deg);
+
+            /*
+             * Stop as soon as:
+             *  - yaw enters the deadband, OR
+             *  - yaw crosses through zero (prevents overshoot).
+             */
+            if (debug_absf(yaw_error_deg) <= VOFA_NAV_YAW_DEADBAND_DEG ||
+                (yaw_sign != 0 && yaw_sign != debug_yaw_start_sign))
+            {
+                if (debug_yaw_velocity_active)
+                {
+                    chassis_stop_sync();
+                    debug_yaw_velocity_active = 0U;
+                }
+
+                debug_edge_phase = DEBUG_EDGE_SETTLE_AFTER_YAW;
+                debug_settle_until_ms = now_ms + VOFA_NAV_YAW_SETTLE_MS;
+                return;
+            }
+
+            if ((uint32_t)(now_ms - debug_yaw_correct_start_ms) >
+                VOFA_NAV_YAW_CORRECT_TIMEOUT_MS)
+            {
+                if (debug_yaw_velocity_active)
+                {
+                    chassis_stop_sync();
+                    debug_yaw_velocity_active = 0U;
+                }
+
+                debug_nav_abort();
+                last_result = 12U;
+                return;
+            }
+
+            return;
+        }
+
+        if (debug_edge_phase == DEBUG_EDGE_SETTLE_AFTER_YAW)
+        {
+            if ((int32_t)(now_ms - debug_settle_until_ms) < 0)
+                return;
+
+            if (!hwt101_is_fresh(imu, now_ms, VOFA_NAV_IMU_TIMEOUT_MS))
+            {
+                last_result = 9U;
+                return;
+            }
+
+            /*
+             * Closed-loop correction has already stopped on the IMU.
+             * Commit the edge now and allow Navigation to launch the next one.
+             */
+            debug_commit_edge();
+            return;
+        }
+
+        debug_nav_abort();
+        last_result = 7U;
+        return;
+    }
+
+    if (Navigation_GetState(&s_debug_nav) == NAV_STATE_NO_PATH ||
+        Navigation_GetState(&s_debug_nav) == NAV_STATE_ERROR)
+    {
+        last_result = 7U;
+        return;
+    }
+
+    if (Navigation_GetState(&s_debug_nav) != NAV_STATE_RUNNING)
+        return;
+
+    if (!Navigation_GetCurrentEdge(&s_debug_nav, &from_node, &to_node))
+    {
+        last_result = 7U;
+        Navigation_Abort(&s_debug_nav);
+        return;
+    }
+
+    if (!MapGraph_IsConnected(from_node, to_node))
+    {
+        last_result = 7U;
+        Navigation_Abort(&s_debug_nav);
+        return;
+    }
+
+    if (!hwt101_is_fresh(imu, now_ms, VOFA_NAV_IMU_TIMEOUT_MS))
+    {
+        last_result = 9U;
+        return;
+    }
+
+    /*
+     * Software reference only: preserve the heading present at edge start.
+     */
+    hwt101_set_zero(imu);
+
+    dx = g_nodes[to_node].x - g_nodes[from_node].x;
+    dy = g_nodes[to_node].y - g_nodes[from_node].y;
+
+    s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+
+    chassis_motion_translate(&s_debug_chassis,
+                             dx,
+                             dy,
+                             ROUTE_EDGE_SPEED_MPS,
+                             now_ms);
+
+    debug_edge_active = 1U;
+    debug_edge_phase = DEBUG_EDGE_TRANSLATING;
+}
+
+void VofaDebug_Init(void)
+{
+    MecanumConfig cfg;
+
+    rx_i = 0U;
+    cmd_ready = 0U;
+    last_cmd = 0U;
+    last_result = 0U;
+    last_tx_ms = 0U;
+    formal_motion_active = 0U;
+    debug_nav_initialized = 0U;
+    debug_edge_active = 0U;
+    debug_edge_phase = DEBUG_EDGE_IDLE;
+    debug_settle_until_ms = 0U;
+    debug_yaw_correct_start_ms = 0U;
+    debug_yaw_start_sign = 0;
+    debug_yaw_velocity_active = 0U;
+    txp.p.tail = 0x7F800000UL; /* 00 00 80 7F on Cortex-M */
+
+    /*
+     * Use the real calibrated chassis configuration.
+     * This is the same motion/kinematics layer used by navigation.
+     */
+    chassis_config_init_mecanum(&cfg);
+    chassis_init(&s_debug_chassis, &cfg);
+    s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+}
+
+void VofaDebug_FeedByte(uint8_t b)
+{
+    if (rx_i == 0U) {
+        if (b == 0xAAU) { rx[0] = b; rx_i = 1U; }
+        return;
+    }
+
+    if (rx_i == 1U) {
+        if (b == 0x55U) { rx[1] = b; rx_i = 2U; }
+        else {
+            rx_i = (b == 0xAAU) ? 1U : 0U;
+            if (rx_i == 1U) rx[0] = 0xAAU;
+        }
+        return;
+    }
+
+    rx[rx_i++] = b;
+    if (rx_i >= RX_LEN) {
+        if (!cmd_ready) {
+            cmd_v = rx[2];
+            p1_v = rx[3];
+            p2_v = rx[4];
+            p3_v = rx[5];
+            p4_v = rx[6];
+            cmd_ready = 1U;
+        }
+        rx_i = 0U;
+    }
+}
+
+static void process_cmd(void)
+{
+    uint8_t c, p1, p2, p3, p4;
+    uint32_t primask;
+    uint16_t rpm, us;
+
+    if (!cmd_ready) return;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    c = cmd_v; p1 = p1_v; p2 = p2_v; p3 = p3_v; p4 = p4_v;
+    cmd_ready = 0U;
+    if (!primask) __enable_irq();
+
+    last_cmd = c;
+    last_result = 1U;
+
+    switch (c) {
+    case 0x01U:
+        chassis_motion_stop(&s_debug_chassis);
+        formal_motion_active = 0U;
+        debug_nav_abort();
+        stop_all();
+        break;
+
+    case 0x02U:
+        hwt101_set_zero(AppUart_GetImu());
+        break;
+
+    case 0x10U:
+        if (!valid_id(p1) || p2 > 1U) { last_result = 2U; break; }
+        Emm_V5_En_Control(p1, p2 ? true : false, false);
+        break;
+
+    case 0x11U:
+        if (!valid_id(p1) || p2 > 1U) { last_result = 2U; break; }
+        rpm = (uint16_t)p3 * 10U;
+        if (rpm > VOFA_DEBUG_MAX_RPM) rpm = VOFA_DEBUG_MAX_RPM;
+        Emm_V5_Vel_Control(p1, p2, rpm, p4, false);
+        break;
+
+    case 0x12U:
+        if (!valid_id(p1)) { last_result = 2U; break; }
+        Emm_V5_Stop_Now(p1, false);
+        break;
+
+    case 0x20U:
+        if (p1 == 0U) GripperServo_Open();
+        else if (p1 == 1U) GripperServo_Mid();
+        else if (p1 == 2U) GripperServo_Close();
+        else last_result = 2U;
+        break;
+
+    case 0x21U:
+        if (p1 > 2U) { last_result = 2U; break; }
+        CarouselServo_GotoSlot(p1);
+        break;
+
+    case 0x22U:
+        us = (uint16_t)(((uint16_t)p2 << 8) | p3);
+        if (p1 == 0U) GripperServo_SetUs(us);
+        else if (p1 == 1U) CarouselServo_SetUs(us);
+        else last_result = 2U;
+        break;
+
+    case 0x30U: /* chassis enable/disable */
+        if (p1 > 1U) { last_result = 2U; break; }
+        chassis_enable(p1);
+        break;
+
+    case 0x31U: /* forward */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        /* ID1/2 forward=0, ID3/4 forward=1 */
+        chassis_velocity_sync(0U, 0U, 1U, 1U, rpm, p2);
+        break;
+
+    case 0x32U: /* backward */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        chassis_velocity_sync(1U, 1U, 0U, 0U, rpm, p2);
+        break;
+
+    case 0x33U: /* strafe left (-X) */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        /* FL-, RL+, RR-, FR+ */
+        chassis_velocity_sync(1U, 0U, 0U, 1U, rpm, p2);
+        break;
+
+    case 0x34U: /* strafe right (+X) */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        /* FL+, RL-, RR+, FR- */
+        chassis_velocity_sync(0U, 1U, 1U, 0U, rpm, p2);
+        break;
+
+    case 0x35U: /* rotate counter-clockwise (+wz) */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        /* FL-, RL-, RR+, FR+ -> all four EMM direction bits are 1 */
+        chassis_velocity_sync(1U, 1U, 1U, 1U, rpm, p2);
+        break;
+
+    case 0x36U: /* rotate clockwise (-wz) */
+        rpm = (uint16_t)p1 * 10U;
+        if (rpm == 0U) { last_result = 2U; break; }
+        chassis_velocity_sync(0U, 0U, 0U, 0U, rpm, p2);
+        break;
+
+    case 0x37U: /* stop chassis */
+        chassis_stop_sync();
+        break;
+
+
+    case 0x40U: /* formal forward 450 mm */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_forward(&s_debug_chassis,
+                               VOFA_FORMAL_DISTANCE_M,
+                               VOFA_FORMAL_MOVE_SPEED_MPS,
+                               HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x41U: /* formal backward 450 mm */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_backward(&s_debug_chassis,
+                                VOFA_FORMAL_DISTANCE_M,
+                                VOFA_FORMAL_MOVE_SPEED_MPS,
+                                HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x42U: /* formal strafe left 450 mm */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_strafe_left(&s_debug_chassis,
+                                   VOFA_FORMAL_DISTANCE_M,
+                                   VOFA_FORMAL_MOVE_SPEED_MPS,
+                                   HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x43U: /* formal strafe right 450 mm */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_strafe_right(&s_debug_chassis,
+                                    VOFA_FORMAL_DISTANCE_M,
+                                    VOFA_FORMAL_MOVE_SPEED_MPS,
+                                    HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x44U: /* formal rotate CCW 90 deg */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_rotate_ccw_deg(&s_debug_chassis,
+                                      VOFA_FORMAL_ANGLE_DEG,
+                                      VOFA_FORMAL_MOVE_SPEED_MPS,
+                                      HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x45U: /* formal rotate CW 90 deg */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_nav_is_running()) {
+            last_result = 2U;
+            break;
+        }
+        s_debug_chassis.acceleration = VOFA_FORMAL_MOVE_ACC;
+        chassis_motion_rotate_cw_deg(&s_debug_chassis,
+                                     VOFA_FORMAL_ANGLE_DEG,
+                                     VOFA_FORMAL_MOVE_SPEED_MPS,
+                                     HAL_GetTick());
+        formal_motion_active = 1U;
+        break;
+
+    case 0x46U: /* stop formal position motion */
+        chassis_motion_stop(&s_debug_chassis);
+        formal_motion_active = 0U;
+        break;
+
+
+    case 0x50U: /* navigation debug init/reset: P1=start node 1..9 */
+        if (p1 < 1U || p1 > NODE_NUM ||
+            chassis_motion_busy(&s_debug_chassis) ||
+            formal_motion_active)
+        {
+            last_result = 2U;
+            break;
+        }
+
+        if (!Navigation_Init(&s_debug_nav, p1, 0UL))
+        {
+            last_result = 7U;
+            break;
+        }
+
+        debug_nav_initialized = 1U;
+        debug_edge_active = 0U;
+        break;
+
+    case 0x51U: /* plan and physically drive to node P1 */
+        if (!debug_nav_initialized ||
+            p1 < 1U || p1 > NODE_NUM ||
+            formal_motion_active ||
+            chassis_motion_busy(&s_debug_chassis) ||
+            debug_edge_active ||
+            debug_nav_is_running())
+        {
+            last_result = 2U;
+            break;
+        }
+
+        if (!Navigation_PlanTo(&s_debug_nav, p1))
+        {
+            last_result = 7U;
+            break;
+        }
+
+        /* start == target: Dijkstra is already complete */
+        if (Navigation_IsDone(&s_debug_nav))
+            last_result = 6U;
+        break;
+
+    case 0x52U: /* abort navigation and stop chassis */
+        if (chassis_motion_busy(&s_debug_chassis) || debug_edge_active)
+            chassis_motion_stop(&s_debug_chassis);
+
+        formal_motion_active = 0U;
+        debug_nav_abort();
+        break;
+
+    case 0x53U: /* set static obstacle mask; little-endian P1..P4 */
+        if (!debug_nav_initialized ||
+            debug_nav_is_running() ||
+            debug_edge_active ||
+            chassis_motion_busy(&s_debug_chassis))
+        {
+            last_result = 2U;
+            break;
+        }
+        {
+            uint32_t mask =
+                ((uint32_t)p1) |
+                ((uint32_t)p2 << 8) |
+                ((uint32_t)p3 << 16) |
+                ((uint32_t)p4 << 24);
+
+            if (!Navigation_SetObstacleMask(&s_debug_nav, mask))
+                last_result = 7U;
+        }
+        break;
+
+    default:
+        last_result = 3U;
+        break;
+    }
+}
+
+static void send_telemetry(uint32_t now_ms)
+{
+    Hwt101 *imu;
+
+    if ((uint32_t)(now_ms - last_tx_ms) < VOFA_DEBUG_PERIOD_MS) return;
+    if (huart5.gState != HAL_UART_STATE_READY) return;
+
+    imu = AppUart_GetImu();
+
+    txp.p.ch[0] = imu->roll_deg;
+    txp.p.ch[1] = imu->pitch_deg;
+    txp.p.ch[2] = hwt101_yaw_relative_deg(imu);
+    txp.p.ch[3] = hwt101_is_fresh(imu, now_ms, 500U) ? 1.0f : 0.0f;
+    txp.p.ch[4] = (float)can_error_step;
+    txp.p.ch[5] = (float)can_error_count;
+    txp.p.ch[6] = (float)can_busoff_cnt;
+    txp.p.ch[7] = can_rx_flag ? 1.0f : 0.0f;
+    txp.p.ch[8] = (float)last_cmd;
+    txp.p.ch[9] = (float)last_result;
+
+    if (HAL_UART_Transmit_IT(&huart5, txp.raw, (uint16_t)sizeof(txp.raw)) == HAL_OK)
+        last_tx_ms = now_ms;
+}
+
+void VofaDebug_Update(uint32_t now_ms)
+{
+    process_cmd();
+
+    /*
+     * Required by the non-blocking chassis state machine.
+     * Keep calling this every main-loop iteration.
+     */
+    chassis_update(&s_debug_chassis, now_ms);
+
+    if (formal_motion_active) {
+        if (chassis_motion_failed(&s_debug_chassis)) {
+            last_result = 5U;
+            formal_motion_active = 0U;
+        }
+        else if (chassis_motion_done(&s_debug_chassis)) {
+            last_result = 4U;
+            formal_motion_active = 0U;
+        }
+    }
+
+    debug_navigation_update(now_ms);
+
+    send_telemetry(now_ms);
+}

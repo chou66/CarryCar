@@ -1,0 +1,17 @@
+V1.1 static path audit
+
+[OK] Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h
+[OK] Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+[OK] Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_fdcan.c
+[OK] Drivers/CMSIS/Device/ST/STM32G4xx/Include/stm32g4xx.h
+[OK] Drivers/CMSIS/Include/core_cm4.h
+
+[OK] All uvprojx FilePath entries resolve.
+[OK] All configured include directories resolve.
+
+[OK] ../Core/Inc -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Core/Inc
+[OK] ../Drivers/STM32G4xx_HAL_Driver/Inc -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Drivers/STM32G4xx_HAL_Driver/Inc
+[OK] ../Drivers/STM32G4xx_HAL_Driver/Inc/Legacy -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Drivers/STM32G4xx_HAL_Driver/Inc/Legacy
+[OK] ../Drivers/CMSIS/Device/ST/STM32G4xx/Include -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+[OK] ../Drivers/CMSIS/Include -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Drivers/CMSIS/Include
+[OK] ../Hardware -> /mnt/data/CarryCar_G491_Full_Integrated_V1_1_DriversFixed/Hardware

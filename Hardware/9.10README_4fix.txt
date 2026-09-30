@@ -1,0 +1,64 @@
+G491 搬运车底盘 - 4 项问题修复版
+================================
+
+这版按当前已经确定的底盘方案，把四项基础问题一起收口，并吸收了后续对 EMM 到位判定的修正。
+
+1. EMM/CAN 驱动修复
+-------------------
+- 修复 13 字节位置命令拆成两帧时的“半包发送”问题：发送前一次性检查 TX FIFO 槽位。
+- 保留 raF=0U 的当前相对位置调用，不擅自改成 2U。
+- 新增 0x3A 状态读取与解析；Prf_TF(bit1) 作为正式到位依据。
+- 新增 0x36 实时位置、0x37 位置误差解析，便于调试/标定/故障诊断。
+- 解析 FD 02/9F/E2/EE；E2/EE 可让底盘立即失败，不必傻等 timeout。
+- 0x3A 中 Cgi_TF/Cgp_TF 堵转/堵转保护会直接判位置动作失败。
+
+2. MecanumConfig 真正初始化
+---------------------------
+新增 chassis_config.h，已经填入：
+- 麦轮直径 77 mm
+- 前后轮中心距 219.29 mm
+- 左右轮中心距 161.91 mm
+- 1:1 直驱
+- 3200 pulse/rev
+- 暂定最大 1000 RPM
+
+实车脉冲标定先保持 0，自动使用理论值。
+四轮 forward_dir 暂时为 0 占位，必须悬空轮测试后修改。
+
+3. 节点寻路不再绕过标定
+-----------------------
+新增 chassis_motion.c/.h。
++X/-X、+Y/-Y、+theta/-theta 的校准统一放进 chassis_motion_move() 核心入口。
+未来节点直接使用：
+    dx = next.x - current.x;
+    dy = next.y - current.y;
+    chassis_motion_translate(..., dx, dy, ...);
+也会经过相同标定，不再只对 forward/left 等快捷函数生效。
+
+4. 固定 10s 超时改成动态超时，并与“真正到位”分工
+--------------------------------------------------
+- 默认 position_timeout_ms=0，表示每次动作自动计算 timeout。
+- 估算考虑本次 wheel pulses、rpm、EMM acc 档位的加减速时间，再加安全系数和固定余量。
+- 动态 timeout 只做故障兜底。
+- 正常 position_done 必须由本次动作启动后轮询到的 0x3A/Prf_TF 来确认。
+- 同步启动后先留 80ms 状态查询保护期，并清掉 MCU 中上一条动作的缓存，降低旧 Prf_TF=1 被误认成新动作完成的风险。
+
+替换文件
+--------
+直接替换 Hardware 下：
+- emm_v5_can.c
+- emm_v5_can.h
+- chassis.c
+- chassis.h
+
+新增到 Hardware：
+- chassis_config.h
+- chassis_motion.c
+- chassis_motion.h
+
+main.c 不直接覆盖，请参考 main_init_example.txt 手动接入 USER CODE 区。
+
+上车前必须做的两件事
+--------------------
+1) 悬空轮逐个确认 ID1=FL、ID2=RL、ID3=RR、ID4=FR 的 forward_dir 0/1。
+2) 先用短距离、低速测试 0x3A 状态查询是否稳定收到；Response 不需要改，保持 Receive 即可。

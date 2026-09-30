@@ -1,0 +1,8 @@
+V1.5 UART5 VOFA 底盘六方向调试
+
+直接双击根目录：27_carrycar.uvprojx
+然后 Project -> Rebuild all target files。
+
+先阅读：V1_5_底盘六方向VOFA调试.md
+四轮实测方向已写入：ID1=0, ID2=0, ID3=1, ID4=1。
+底盘快捷命令最大 100 RPM；建议先用 50 RPM。

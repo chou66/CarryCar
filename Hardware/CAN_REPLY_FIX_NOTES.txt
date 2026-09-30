@@ -1,0 +1,56 @@
+EMM CAN 控制应答修订说明
+========================
+
+修改范围
+--------
+仅修改：
+- Hardware/emm_v5_can.h
+- Hardware/emm_v5_can.c
+
+未修改：
+- Core/Src/main.c
+- Hardware/chassis.c
+- Hardware/mecanum_kinematics.c
+- 其它 CubeMX/HAL 文件
+
+协议依据
+--------
+按《ZDT_X42S 第二代闭环步进电机用户手册 V1.0.4》4.2.2：
+CAN 电机返回 payload 为：
+    [原功能码] [返回数据] [校验码]
+
+通用返回数据：
+- 0x02：命令接收正确
+- 0xE2：参数错误 / 数据范围不满足 / 当前条件不满足
+- 0xEE：命令格式错误
+- 0x9F：动作执行完成（取决于“控制命令应答方式”配置）
+
+因此，本项目采用的 V1.0.4 协议中：
+- 位置格式错误：FD EE 6B
+- 速度格式错误：F6 EE 6B
+- 停止格式错误：FE EE 6B
+- 同步格式错误：FF EE 6B
+并不是统一的 00 EE 6B。
+
+本次修改
+--------
+1. 把 02/E2/EE/9F 定义为控制命令通用返回码，不再只按 0xFD 理解。
+2. 控制应答同时保存“原功能码 + 返回码 + 时间戳”。
+3. 新增 control_response_valid。
+4. 新增 emm_clear_control_response()。
+5. 新增 emm_get_control_response_after()，供后续上层做非阻塞 ACK 状态机。
+6. F6/FD/FE/FF 的 E2/EE 都会锁存 control_error。
+7. 只有通过功能码、DLC、固定 0x6B 校验的已识别帧才更新 online。
+8. 当前已解析的短帧要求 Packet=0，避免其它分包被误解释。
+9. 保持原有发送分包格式不变，与官方 CAN 例程/手册一致。
+
+设计取舍
+--------
+官方 F407 示例的发送和分包方式继续作为协议兼容基准；
+但不照搬其“收到任意一帧就置 rxFrameFlag”的应用层处理方式。
+本工程在不改变线上的 CAN 协议前提下，增加严格接收校验和错误状态缓存。
+
+后续若要做到：
+    发 FD -> 等该电机 FD 02 -> 四轮全部确认 -> 再发 FF
+可以直接利用 emm_get_control_response_after() 在 chassis 状态机里实现，
+无需阻塞 while 等待。

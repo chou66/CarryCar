@@ -1,0 +1,187 @@
+27_carrycar 底盘基础层修改说明
+================================
+
+本包包含本轮要求的 4 项修改：
+1) 修 EMM CAN 驱动；
+2) 写好 MecanumConfig 初始化；
+3) 修节点寻路会绕过正/负方向标定的问题；
+4) 固定 10s 位置超时改为动态超时。
+
+一、需要替换/新增的文件
+----------------------
+Hardware/emm_v5_can.c       替换
+Hardware/emm_v5_can.h       替换
+Hardware/chassis.c          替换
+Hardware/chassis.h          替换
+Hardware/chassis_config.h   新增或替换
+Hardware/chassis_motion.c   新增或替换
+Hardware/chassis_motion.h   新增或替换
+
+mecanum_kinematics.c/.h 本轮没有改，因为现有核心逆解公式不需要为了这 4 项任务修改。
+
+二、EMM 驱动本轮修了什么
+------------------------
+1. 修复 CAN 多帧命令“半包发送”：
+   emm_can_send() 会先计算一条逻辑命令完整需要几个 CAN 帧，
+   确认 TX FIFO 空位足够后才开始入队。
+   13 字节位置命令需要 2 个 CAN 帧；FIFO 只有 1 个空位时现在直接 HAL_BUSY，
+   不会先发 packet0 再失败。
+
+2. 位置模式字段明确成 EmmPositionMode：
+   0 = 相对上一次输入目标位置
+   1 = 相对坐标零点绝对位置
+   2 = 相对当前实时位置
+
+   为保持你上一轮已经确认的官方 F407 示例/当前工程行为，
+   chassis_config.h 默认：
+       CHASSIS_EMM_POSITION_MODE = 0U
+
+   如果以后明确要把“每一段 dx/dy”定义为严格相对电机当前实时位置，
+   可以再把它改为 2U；本轮没有擅自改变该语义。
+
+3. 把位置命令回包分开记录：
+   FD 02 -> position_command_accepted
+   FD 9F -> position_reached
+   FD E2/EE -> position_error
+
+   底盘只把 FD 9F 当作“到位”，不会把 FD 02 当到位。
+   如果收到 E2/EE，chassis 会直接判失败并停车，不再一直等到超时。
+
+三、EMM 驱动器上必须确认的设置
+------------------------------
+当前位置完成判断依赖 FD 9F。
+因此 4 个驱动器的 Response（控制命令应答）不能保持默认 Receive。
+建议：
+    Other
+调试阶段也可以：
+    Both
+或：
+    Reached
+
+默认 Receive 只确认收到命令，不会主动发位置到位 9F，
+那底盘最终一定会走到位置超时。
+
+注意：本包没有自动写驱动器的 Response 参数。
+原因是该参数属于整块持久化驱动配置，直接在启动时盲写整块配置风险较高，
+建议先在驱动器菜单/上位机中统一设定。
+
+四、MecanumConfig 初始化
+------------------------
+chassis_config.h 已经把当前已确定参数写入：
+    轮径：77 mm -> radius = 0.0385 m
+    前后轮中心距：219.29 mm -> half_length = 0.109645 m
+    左右轮中心距：161.91 mm -> half_width  = 0.080955 m
+    直驱：gear_ratio = 1.0
+    1.8° + 16细分：motor_pulses_per_rev = 3200
+    软件最大转速：暂保留 1000 RPM
+
+初始化调用：
+    MecanumConfig mecanum_cfg;
+    chassis_config_init_mecanum(&mecanum_cfg);
+    chassis_init(&chassis, &mecanum_cfg);
+
+实车 pulses/m、pulses/rad 暂时全部为 0，
+这样 mecanum_kinematics.c 会先根据机械尺寸自动使用理论值。
+
+四轮 forward_dir 目前仍只能留“可编译占位 0”：
+    CHASSIS_MOTOR_1_FORWARD_DIR
+    CHASSIS_MOTOR_2_FORWARD_DIR
+    CHASSIS_MOTOR_3_FORWARD_DIR
+    CHASSIS_MOTOR_4_FORWARD_DIR
+这 4 个必须装车后悬空逐轮确认，不能从现有文件可靠猜出来。
+
+五、节点寻路标定问题
+--------------------
+核心接口现在统一是有符号坐标：
+    +X 右，-X 左
+    +Y 前，-Y 后
+    +theta 逆时针，-theta 顺时针
+
+节点寻路可直接：
+    dx = node[next].x - node[current].x;
+    dy = node[next].y - node[current].y;
+    chassis_motion_translate(&chassis, dx, dy, speed, HAL_GetTick());
+
+关键修改：
+所有 +/- 方向比例标定、平移串扰/航向串扰，都集中在
+    chassis_motion_move()
+里面应用。
+
+因此无论上层走：
+    chassis_motion_translate(dx, dy)
+还是人工测试走：
+    forward/backward/left/right
+最终都会进入同一套标定，不会再出现“快捷函数有标定、节点寻路绕过标定”。
+
+注意：
+这里 dx/dy 仍是“车体坐标系”。
+以后节点坐标如果是场地/世界坐标，并且车辆会改变 yaw，
+仍需要在更上层结合 HWT101 做 world -> body 坐标变换。
+这一轮按之前约定暂不接 HWT101。
+
+六、动态位置超时
+----------------
+旧版默认固定：
+    10000 ms
+
+新版默认：
+    chassis.position_timeout_ms = 0
+表示启用动态超时。
+
+每次位置动作会根据 4 个轮子的：
+    pulses
+    rpm
+    motor_pulses_per_rev
+    acceleration
+估算理论最长运动时间。
+
+acc != 0 时，还按 EMM 手册的加速度规律：
+    每 (256 - acc) * 50 us 改变 1 RPM
+估算三角/梯形速度曲线。
+
+最终：
+    timeout = 理论最长时间 * 1.50 + 1500 ms
+并限制在：
+    2000 ms ~ 120000 ms
+
+这些参数都在 chassis_config.h：
+    CHASSIS_POSITION_TIMEOUT_SCALE
+    CHASSIS_POSITION_TIMEOUT_MARGIN_MS
+    CHASSIS_POSITION_TIMEOUT_MIN_MS
+    CHASSIS_POSITION_TIMEOUT_MAX_MS
+
+仍保留手动固定覆盖：
+    chassis_set_position_timeout(&chassis, 15000U);
+恢复动态：
+    chassis_set_position_timeout(&chassis, 0U);
+
+调试时可读本次动态结果：
+    chassis_active_position_timeout_ms(&chassis)
+
+七、main.c 最小接入
+-------------------
+本轮没有直接改你的 main.c，避免把测试动作擅自写进主循环。
+参考同目录 main_init_example.txt。
+
+至少要做到：
+1. CubeMX 外设初始化完成后调用 emm_can_start(&hfdcan1)
+2. chassis_config_init_mecanum()
+3. chassis_init()
+4. 周期调用 chassis_update()，建议约 100 Hz
+
+八、编译检查
+------------
+本轮 7 个文件已经做过 C99 语法编译检查；
+同时做了逻辑测试：
+- 位置命令 TX FIFO 只剩 1 个槽时不会发送半包；
+- 有 2 个槽时位置命令拆成 2 帧正常入队；
+- 1m / 0.2m/s 的动态超时约 9.5s；
+- 10m / 0.2m/s 的动态超时约 76.5s；
+- 手动固定 timeout 覆盖仍然有效。
+
+真正上车前仍要确认：
+A. 4 个 forward_dir；
+B. 4 个驱动器 Response；
+C. CAN ID 为 1/2/3/4 且对应 FL/RL/RR/FR；
+D. 细分仍为 16；
+E. 第一轮必须悬空轮测试方向，再落地。

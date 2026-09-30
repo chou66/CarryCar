@@ -1,0 +1,3 @@
+V1.4 UART5 VOFA DEBUG
+Open: MDK-ARM/27_carrycar.uvprojx
+Read: UART5_VOFA_DEBUG_README.md

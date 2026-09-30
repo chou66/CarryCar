@@ -1,0 +1,151 @@
+EMM 主动状态轮询版 - 替换说明
+================================
+
+本次修改目标
+------------
+
+解决驱动器保持出厂默认 Response = Receive 时，底盘无法收到 FD 9F、
+从而永远等不到“位置到位”的问题。
+
+新方案不要求修改四块驱动器 Response：
+
+    四轮 FD 位置命令
+        -> FF 同步启动
+        -> 等待 50ms 保护期
+        -> STM32 轮询 0x3A
+        -> 解析 Prf_TF(bit1)
+        -> 四个参与运动的电机全部 Prf_TF=1
+        -> chassis_position_done = true
+
+FD 9F 仍然兼容，但不再是必须条件。
+
+
+本包文件
+--------
+
+Hardware/emm_v5_can.c
+Hardware/emm_v5_can.h
+Hardware/chassis.c
+Hardware/chassis.h
+emm_active_status_polling_update.patch
+
+
+这次实际改了什么
+----------------
+
+1. emm_can_send() 保留并完善“完整命令 FIFO 空位预检查”
+   - 13 字节位置命令需要 2 个 CAN 帧
+   - FIFO 只剩 1 个槽位时一帧都不发
+   - 避免 packet0 发出后 packet1 HAL_BUSY 的半包问题
+
+2. EMM 驱动增加主动查询接口
+   - 0x35：实时转速
+   - 0x36：实时位置
+   - 0x37：位置误差
+   - 0x3A：电机状态标志
+
+3. 解析 0x3A
+   - bit1 = Prf_TF
+   - 作为底盘位置动作的主要“真正到位”判据
+
+4. 兼容 FD 回包
+   - FD 02：命令已接受
+   - FD 9F：主动到位回包
+   - FD E2 / EE：命令错误，底盘立即判失败
+
+5. chassis 位置模式改为主动轮询
+   - 100Hz chassis_update() 下，每 10ms 只查询一台电机
+   - 四轮完整轮询一圈约 40ms
+   - 不会一次把四个查询全部塞入 TX FIFO
+   - 50ms 启动保护期后再认本次 Prf_TF，避免旧状态误判
+
+6. 固定 10 秒位置超时改成动态超时
+   - 根据每轮 pulses / rpm / acc 估算最长运动时间
+   - 乘 1.5 安全系数
+   - 再加 1000ms 固定余量
+   - timeout 只做异常兜底，不用来猜“应该到位了”
+
+7. chassis_set_position_timeout()
+   - 现在表示“人工最小超时”
+   - 0 = 完全自动
+   - 非 0 = max(自动动态值, 人工值)
+   - 不会再因为人为填 10s 而误杀一个正常需要 70s 的长动作
+
+8. 保留当前位置模式参数
+   - chassis 仍使用 emm_pos(..., 0U, true)
+   - 即相对“上一次输入目标位置”的相对运动
+   - 没有改成 2U
+
+
+替换方法
+--------
+
+直接把本包 Hardware 目录中的四个文件覆盖到工程 Hardware：
+
+    emm_v5_can.c
+    emm_v5_can.h
+    chassis.c
+    chassis.h
+
+mecanum_kinematics.c/.h 不需要因为本次到位判断方案而修改。
+chassis_motion.c/.h 和 chassis_config.h 也不需要因为本次方案再次修改。
+
+
+系统接入仍然要满足
+------------------
+
+CubeMX 初始化之后需要调用：
+
+    emm_can_start(&hfdcan1);
+
+并且需要 100Hz 左右周期调用：
+
+    chassis_update(&chassis, HAL_GetTick());
+
+本包没有修改 main.c。
+
+
+关于 0x36 实时位置
+------------------
+
+驱动已经继续保留/完善：
+
+    emm_read_current_position(id);
+
+收到后：
+
+    emm_motors[id].encoder_counts
+
+会被后台更新。
+
+当前底盘“是否到位”不使用 0x36 自己重新计算误差，
+而优先使用驱动器内部已经计算好的 0x3A / Prf_TF。
+
+这样更简单，也直接使用厂家的位置到达窗口逻辑。
+
+0x36 和 0x37 更适合后续：
+- 调试
+- 标定
+- timeout 故障诊断
+- 查看哪一个轮子实际停在哪里
+
+
+上车前仍需确认
+--------------
+
+1. 四个电机 ID 与底盘映射：
+   ID1 = FL
+   ID2 = RL
+   ID3 = RR
+   ID4 = FR
+
+2. 四轮 forward_dir 需要悬空测试确认。
+
+3. Response 可以保持出厂默认 Receive。
+   本版本不依赖 FD 9F。
+
+4. 位置模式仍保持 raF = 0。
+   如果未来决定改成“相对当前实时位置”的模式，再单独把 chassis 中的 0U 改为 2U；
+   不要在这一步同时混改。
+
+5. HWT101 / heading_control 本次没有接入。

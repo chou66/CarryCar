@@ -1,0 +1,23 @@
+# Keil MDK build outputs
+MDK-ARM/Objects/
+MDK-ARM/Listings/
+*.o
+*.d
+*.axf
+*.hex
+*.bin
+*.elf
+*.map
+*.lnp
+*.htm
+*.dep
+*.crf
+*.lst
+*.scvd
+*.iex
+
+# Keil per-user GUI state
+*.uvguix.*
+
+# IDE / editor
+.vscode/
