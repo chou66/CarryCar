@@ -21,3 +21,11 @@ MDK-ARM/Listings/
 
 # IDE / editor
 .vscode/
+
+# Keil temp files / extra build outputs (added 2026-10-01)
+*.__i
+MDK-ARM/27_carrycar/
+MDK-ARM/build_*.log
+
+# PC test binaries
+*.exe

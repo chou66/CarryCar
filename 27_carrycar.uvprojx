@@ -10,7 +10,7 @@
       <TargetName>27_carrycar</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>6240000::V6.24::ARMCLANG</pCCUsed>
+      <pCCUsed>6070000::V6.7::.\ARMCLANG</pCCUsed>
       <uAC6>1</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -506,6 +506,11 @@
               <FilePath>Hardware\emm_v5.c</FilePath>
             </File>
             <File>
+              <FileName>vofa_debug.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>Hardware\vofa_debug.c</FilePath>
+            </File>
+            <File>
               <FileName>emm_adapter.h</FileName>
               <FileType>5</FileType>
               <FilePath>Hardware\emm_adapter.h</FilePath>
@@ -571,11 +576,6 @@
               <FilePath>Hardware\robot_app.c</FilePath>
             </File>
             <File>
-              <FileName>vofa_debug.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>Hardware\vofa_debug.c</FilePath>
-            </File>
-            <File>
               <FileName>vofa_debug.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\Hardware\vofa_debug.h</FilePath>
@@ -584,6 +584,16 @@
               <FileName>robot_config.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\Hardware\robot_config.h</FilePath>
+            </File>
+            <File>
+              <FileName>servo.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\servo.h</FilePath>
+            </File>
+            <File>
+              <FileName>tim.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>Core/Src/tim.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -604,11 +614,6 @@
               <FileName>fdcan.c</FileName>
               <FileType>1</FileType>
               <FilePath>Core/Src/fdcan.c</FilePath>
-            </File>
-            <File>
-              <FileName>tim.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>Core/Src/tim.c</FilePath>
             </File>
             <File>
               <FileName>usart.c</FileName>

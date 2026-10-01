@@ -21,4 +21,8 @@ void Servo_Open(void);
 void Servo_Close(void);
 void Servo_Mid(void);
 
+
+void TraySelectorServo_SetUs(uint16_t us);
+void Pwm4Servo_SetUs(uint16_t us);
+
 #endif

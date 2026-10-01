@@ -29,9 +29,15 @@ int main(void)
     VofaDebug_Init();
     AppUart_Init();
 
+#if 0
+    /* Power-on CAN smoke test: slide motor (id 6) turns two revolutions. */
+    HAL_Delay(1000U);        /* let the EMM drivers finish their own power-up */
+    Motor1_RevTest();
+#endif
+
     while (1)
     {
-        VofaDebug_Update(HAL_GetTick());
+					(HAL_GetTick());
     }
 }
 

@@ -13,6 +13,8 @@
 #include "robot_config.h"
 
 #define RX_LEN 7U
+#define MANIP_TEST_RPM 30U
+#define MANIP_TEST_ACC 20U
 
 typedef union {
     struct {
@@ -413,6 +415,62 @@ static void debug_navigation_update(uint32_t now_ms)
     debug_edge_phase = DEBUG_EDGE_TRANSLATING;
 }
 
+/*
+ * Direct CAN smoke test, independent of the chassis/kinematics layers:
+ * make motor 1 rotate exactly one revolution (3200 pulses @ 16 microstep).
+ *
+ * Path: Emm_V5_Pos_Control -> can_SendCmd -> FDCAN2. Nothing else.
+ *
+ * A status query runs first: if the driver does not answer, the test
+ * refuses to move and returns 0. Returns 1 only when the bus round trip
+ * is proven and the one-rev position command has been queued.
+ */
+uint8_t Motor1_RevTest(void)
+{
+    uint8_t status = 0U;
+
+    if (Emm_V5_Read_Status(5U, &status, 60U) == 0U)
+        return 0U;                      /* no CAN reply: bus still dead */
+
+    Emm_V5_En_Control(5U, true, false);
+    HAL_Delay(4U);
+
+    Emm_V5_Pos_Control(5U, 1U, 30U, 10U,
+                       1U * (uint32_t)CHASSIS_MOTOR_PULSES_PER_REV, false, false);
+
+    return 1U;
+}
+
+/*
+ * Direct CAN smoke test for the slide-rail motor (CAN address MOTOR_SLIDE_ID):
+ * rotate two motor revolutions, 30 rpm, acc 10.
+ *
+ * NOTE: pulses per revolution assume the same 16-microstep setup as the
+ * wheel motors (3200/rev). If the slide driver uses a different
+ * subdivision, adjust SLIDE_TEST_PULSES_PER_REV.
+ *
+ * Same contract as Motor1_RevTest(): a status query on id 6 runs first;
+ * no reply -> returns 0 and the motor stays still. Direction 0 is an
+ * arbitrary reference; flip it if the carriage runs the wrong way.
+ */
+#define SLIDE_TEST_PULSES_PER_REV   3200U
+
+uint8_t Slide_RevTest(void)
+{
+    uint8_t status = 0U;
+
+    if (Emm_V5_Read_Status(5U, &status, 60U) == 0U)
+        return 0U;                      /* no CAN reply: id6 silent */
+
+    Emm_V5_En_Control(5U, true, false);
+    HAL_Delay(5U);
+
+    Emm_V5_Pos_Control(5U, 0U, 30U, 10U,
+                       0.5f * SLIDE_TEST_PULSES_PER_REV, false, false);
+
+    return 1U;
+}
+
 void VofaDebug_Init(void)
 {
     MecanumConfig cfg;
@@ -475,7 +533,7 @@ static void process_cmd(void)
 {
     uint8_t c, p1, p2, p3, p4;
     uint32_t primask;
-    uint16_t rpm, us;
+    uint16_t rpm, us, pulses;
 
     if (!cmd_ready) return;
 
@@ -517,6 +575,24 @@ static void process_cmd(void)
         Emm_V5_Stop_Now(p1, false);
         break;
 
+    case 0x13U:
+        if ((p1 != MOTOR_GIMBAL_ID && p1 != MOTOR_SLIDE_ID) || p2 > 1U)
+        {
+            last_result = 2U;
+            break;
+        }
+
+        pulses = (uint16_t)(((uint16_t)p3 << 8) | p4);
+        if (pulses == 0U)
+        {
+            last_result = 2U;
+            break;
+        }
+
+        Emm_V5_Pos_Control(p1, p2, MANIP_TEST_RPM, MANIP_TEST_ACC,
+                           (uint32_t)pulses, false, false);
+        break;
+
     case 0x20U:
         if (p1 == 0U) GripperServo_Open();
         else if (p1 == 1U) GripperServo_Mid();
@@ -530,11 +606,20 @@ static void process_cmd(void)
         break;
 
     case 0x22U:
-        us = (uint16_t)(((uint16_t)p2 << 8) | p3);
-        if (p1 == 0U) GripperServo_SetUs(us);
-        else if (p1 == 1U) CarouselServo_SetUs(us);
-        else last_result = 2U;
-        break;
+    us = (uint16_t)(((uint16_t)p2 << 8) | p3);
+
+    if (p1 == 0U) {
+        GripperServo_SetUs(us);
+    } else if (p1 == 1U) {
+        CarouselServo_SetUs(us);
+    } else if (p1 == 2U) {
+        TraySelectorServo_SetUs(us);
+    } else if (p1 == 3U) {
+        Pwm4Servo_SetUs(us);
+    } else {
+        last_result = 2U;
+    }
+    break;
 
     case 0x30U: /* chassis enable/disable */
         if (p1 > 1U) { last_result = 2U; break; }
@@ -739,6 +824,10 @@ static void process_cmd(void)
             if (!Navigation_SetObstacleMask(&s_debug_nav, mask))
                 last_result = 7U;
         }
+        break;
+
+    case 0x60U: /* motor 1 one-revolution CAN smoke test (direct emm layer) */
+        last_result = Motor1_RevTest() ? 1U : 13U;
         break;
 
     default:

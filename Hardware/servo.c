@@ -13,8 +13,13 @@ void Servo_Init(void)
 {
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, SERVO_SAFE_US);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, SERVO_SAFE_US);
+	  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, SERVO_SAFE_US);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, SERVO_SAFE_US);
+	
     (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
     (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+	  (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+    (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 }
 
 void GripperServo_SetUs(uint16_t us)
@@ -29,6 +34,16 @@ void GripperServo_Mid(void)   { GripperServo_SetUs(GRIPPER_MID_US); }
 void CarouselServo_SetUs(uint16_t us)
 {
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, clamp_us(us));
+}
+
+void TraySelectorServo_SetUs(uint16_t us)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, clamp_us(us));
+}
+
+void Pwm4Servo_SetUs(uint16_t us)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, clamp_us(us));
 }
 
 void CarouselServo_SetAngle(uint16_t angle_deg)

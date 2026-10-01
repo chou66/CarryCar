@@ -28,7 +28,7 @@
 #define SERVO_SAFE_US               1500U
 
 #define GRIPPER_OPEN_US             1000U
-#define GRIPPER_CLOSE_US            2000U
+#define GRIPPER_CLOSE_US            1374U
 #define GRIPPER_MID_US              1500U
 
 /* The old tested code supports 270/360-degree positional servo mapping.
@@ -40,6 +40,11 @@
 #define CAROUSEL_SLOT_STEP_DEG      120U
 #define CAROUSEL_REVERSE            0U
 
+/* 转盘舵机实测工作位置 */
+#define CAROUSEL_PICKUP_US          2120U  /* 夹取物料：逆时针约104度 */
+#define CAROUSEL_PLACE_US           1390U  /* 向三工位料盘放料：顺时针约20度 */
+#define CAROUSEL_MID_US             1500U  /* 安全中位 */
+
 /* ---------- Motor 5/6 mechanical calibration ----------
  * Leave 0.0 until measured. Raw pulse APIs remain usable.
  */
@@ -48,5 +53,7 @@
 
 #define MANIP_DEFAULT_RPM           150U
 #define MANIP_DEFAULT_ACC           20U
+
+
 
 #endif

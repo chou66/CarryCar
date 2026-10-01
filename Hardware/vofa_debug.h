@@ -44,6 +44,8 @@
  * 10 motor enable: P1=id, P2=0/1
  * 11 motor velocity: P1=id, P2=dir, P3=rpm/10, P4=acc
  * 12 stop one motor: P1=id
+ * 13 ID5/ID6 relative position test: P1=id, P2=dir, P3:P4=pulses
+ *    Test motion uses 30 RPM and acceleration 20.
  * 20 gripper: P1=0 open,1 mid,2 close
  * 21 carousel: P1=slot 0..2
  * 22 raw servo us: P1=0 gripper/1 carousel, P2:P3=us
@@ -70,9 +72,13 @@
  * Navigation + Dijkstra bench:
  * 50 init/reset logical start node: P1=start node 1..9
  * 51 plan + physically drive to target: P1=target node 1..9
- * 52 abort navigation + stop chassis
+ * 52 abort navigation and stop chassis
  * 53 set static obstacle mask:
  *    mask = P1 | (P2<<8) | (P3<<16) | (P4<<24)
+ *
+ * Direct CAN smoke test (bypasses chassis/kinematics entirely):
+ * 60 motor 1 rotates one revolution; ch9: 1=commanded+bus alive,
+ *    13=no CAN reply from the driver (bus still broken)
  *
  * Map orientation:
  *   7 -- 8 -- 9
@@ -85,7 +91,7 @@
  *   vehicle FRONT points from node 1 toward node 4 (+Y)
  *   vehicle RIGHT points from node 1 toward node 2 (+X)
  *
- * CH9 / last_result:
+ * Ch9 / last_result:
  * 0=no command, 1=accepted/running, 2=bad parameter or busy,
  * 3=unknown command, 4=formal position done, 5=formal position failed,
  * 6=navigation target reached, 7=navigation/no-path logic error,
@@ -93,9 +99,26 @@
  * 9=waiting for fresh HWT101 data,
  * 10=automatic edge-end yaw correction is running,
  * 11=yaw error too large to auto-correct safely,
- * 12=yaw correction timeout.
+ * 12=yaw correction timeout,
+ * 13=motor1 one-rev test failed: no CAN reply.
  */
 void VofaDebug_Init(void);
 void VofaDebug_FeedByte(uint8_t byte);
 void VofaDebug_Update(uint32_t now_ms);
+
+/* 1 = motor-1 one-rev test auto-runs 3 s after power-up. */
+#define MOTOR1_REV_TEST_ON_BOOT   1
+
+/*
+ * Direct CAN smoke test: motor 1 turns exactly one revolution
+ * (3200 pulses @ 16 microstep). Returns 1 if the driver answered the
+ * pre-move status query (bus round trip OK), 0 if it did not.
+ */
+uint8_t Motor1_RevTest(void);
+
+/*
+ * Direct CAN smoke test: slide-rail motor (id 6) turns two revolutions.
+ * Same probe-first contract; see vofa_debug.c for the pulses-per-rev note.
+ */
+uint8_t Slide_RevTest(void);
 #endif
