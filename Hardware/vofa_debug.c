@@ -187,9 +187,9 @@ static void debug_nav_abort(void)
  *   +X = right
  *   +Y = forward
  *
- * Example:
- *   1 -> 2 : dx=+0.45, dy=0      (strafe right)
- *   1 -> 4 : dx=0,     dy=+0.45  (forward)
+ * Example (measured node coordinates, 2026-10-01):
+ *   1 -> 2 : dx=+0.85, dy=0      (strafe right)
+ *   1 -> 4 : dx=0,     dy=+0.85  (forward)
  */
 static void debug_navigation_update(uint32_t now_ms)
 {

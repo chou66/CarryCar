@@ -155,16 +155,24 @@ static int validate_path(const PathResult_t *path,
     }
 
     /*
-     * 当前工程所有基础边权都是100，
-     * 所以 cost 应为 (length - 1) * 100。
+     * 边权不再统一（按实测坐标距离），改为沿路径累加
+     * g_graph 的真实边权，验证 total_cost 求和正确。
      */
-    if (path->total_cost !=
-        (uint16_t)((path->length - 1) * 100))
     {
-        printf("    ERROR: cost mismatch, cost=%u expected=%u\n",
-               (unsigned)path->total_cost,
-               (unsigned)((path->length - 1) * 100));
-        return 0;
+        uint16_t expected_cost = 0;
+
+        for (i = 0; i + 1 < path->length; i++)
+        {
+            expected_cost += g_graph[path->node[i]][path->node[i + 1]];
+        }
+
+        if (path->total_cost != expected_cost)
+        {
+            printf("    ERROR: cost mismatch, cost=%u expected=%u\n",
+                   (unsigned)path->total_cost,
+                   (unsigned)expected_cost);
+            return 0;
+        }
     }
 
     return 1;
