@@ -96,6 +96,20 @@
 #define MOTION_CAL_X_NEG_TO_Y              (0.0f)
 
 /*
+ * 前后 -> 横向串扰补偿，单位 m(X correction) / m(move command)。
+ *
+ * 2026-10-01 实车观察：后退（-Y）会向左（-X）偏，故新增本组系数。
+ * 填法（对应 signed core 的正方向约定）：
+ *   MOTION_CAL_Y_NEG_TO_X = 左偏量(m) / 后退距离(m)
+ *   例如后退 0.45 m 左偏 1.5 cm -> +0.0333（命令 +X 向右抵消左偏）。
+ * 若实测是向右偏，则填负值。前进（+Y）的对称系数暂无数据，保持 0。
+ * 填数前先用 VOFA ch2 确认后退过程 ch2 偏航没有明显漂移，
+ * 否则偏左可能是偏航造成的，先修航向再补位置。
+ */
+#define MOTION_CAL_Y_POS_TO_X      (0.0f)
+#define MOTION_CAL_Y_NEG_TO_X      (0.0f)
+
+/*
  * 横移 -> 偏航串扰补偿，单位 rad / m。
  *
  * 第二轮实测（横移 0.85 m）：

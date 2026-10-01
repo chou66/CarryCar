@@ -31,6 +31,23 @@ static float strafe_to_y_compensation(float dx_m)
     return 0.0f;
 }
 
+/*
+ * Mirror of the strafe compensation above for the other axis: pure
+ * forward/backward motion couples into X (measured as lateral creep,
+ * e.g. backward drifting left). Apply a small signed X command
+ * proportional to |dy| to cancel it.
+ */
+static float y_to_x_compensation(float dy_m)
+{
+    if (dy_m > 0.0f)
+        return dy_m * MOTION_CAL_Y_POS_TO_X;
+
+    if (dy_m < 0.0f)
+        return (-dy_m) * MOTION_CAL_Y_NEG_TO_X;
+
+    return 0.0f;
+}
+
 void chassis_motion_move(Chassis *chassis,
                          float dx_m, float dy_m, float dtheta_rad,
                          float speed_mps, uint32_t now_ms)
@@ -59,6 +76,7 @@ void chassis_motion_move(Chassis *chassis,
      * calibrated on pure strafe moves only.
      */
     calibrated_y += strafe_to_y_compensation(dx_m);
+    calibrated_x += y_to_x_compensation(dy_m);
     calibrated_theta = apply_signed_scale(dtheta_rad,
                                           MOTION_CAL_THETA_POS_SCALE,
                                           MOTION_CAL_THETA_NEG_SCALE);
