@@ -48,6 +48,43 @@ static float y_to_x_compensation(float dy_m)
     return 0.0f;
 }
 
+/*
+ * Mirror of the cross-axis compensations above for heading: pure
+ * forward/backward motion couples into theta (measured as heading
+ * creep, e.g. forward 0.45 m yawing about +0.9 deg CCW on the
+ * current field). Apply a small signed theta command proportional
+ * to |dy| to cancel it; mecanum_inverse_pos() blends it into the
+ * same position move, so the counter-rotation rides along with the
+ * straight move instead of being a separate turn.
+ */
+static float y_to_theta_compensation(float dy_m)
+{
+    if (dy_m > 0.0f)
+        return dy_m * MOTION_CAL_Y_POS_TO_THETA;
+
+    if (dy_m < 0.0f)
+        return (-dy_m) * MOTION_CAL_Y_NEG_TO_THETA;
+
+    return 0.0f;
+}
+
+/*
+ * Mirror of the heading compensation above for strafe moves: pure
+ * lateral motion couples into theta (measured as right strafe 0.45 m
+ * yawing about +0.9 deg CCW on the current field). Apply a small
+ * signed theta command proportional to |dx| to cancel it.
+ */
+static float x_to_theta_compensation(float dx_m)
+{
+    if (dx_m > 0.0f)
+        return dx_m * MOTION_CAL_X_POS_TO_THETA;
+
+    if (dx_m < 0.0f)
+        return (-dx_m) * MOTION_CAL_X_NEG_TO_THETA;
+
+    return 0.0f;
+}
+
 void chassis_motion_move(Chassis *chassis,
                          float dx_m, float dy_m, float dtheta_rad,
                          float speed_mps, uint32_t now_ms)
@@ -80,6 +117,8 @@ void chassis_motion_move(Chassis *chassis,
     calibrated_theta = apply_signed_scale(dtheta_rad,
                                           MOTION_CAL_THETA_POS_SCALE,
                                           MOTION_CAL_THETA_NEG_SCALE);
+    calibrated_theta += y_to_theta_compensation(dy_m);
+    calibrated_theta += x_to_theta_compensation(dx_m);
 
     chassis_set_position(chassis,
                          calibrated_x,

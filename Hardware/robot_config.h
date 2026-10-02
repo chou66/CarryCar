@@ -14,7 +14,7 @@
  * The yellow forbidden square is 450 x 450 mm; that is NOT the node spacing.
  */
 #define ROUTE_GRID_STEP_M           0.850f
-#define ROUTE_EDGE_SPEED_MPS        0.150f
+#define ROUTE_EDGE_SPEED_MPS        0.550f
 
 /* ---------- Servo calibration ----------
  * TIM3 CH1 / PB4 = gripper

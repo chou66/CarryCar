@@ -10,7 +10,7 @@
 /* Formal chassis-motion validation.
  * 0.20 m/s is approximately 50 wheel RPM for the current 77 mm wheel.
  */
-#define VOFA_FORMAL_MOVE_SPEED_MPS  0.20f
+#define VOFA_FORMAL_MOVE_SPEED_MPS  0.50f
 #define VOFA_FORMAL_MOVE_ACC        10U
 #define VOFA_FORMAL_DISTANCE_M      0.45f
 #define VOFA_FORMAL_ANGLE_DEG       90.0f
@@ -28,7 +28,7 @@
  * This is deliberately one-shot for the first real-car test to avoid
  * oscillating back and forth around 0 degrees.
  */
-#define VOFA_NAV_YAW_DEADBAND_DEG        0.80f
+#define VOFA_NAV_YAW_DEADBAND_DEG        0.50f
 #define VOFA_NAV_YAW_MAX_START_DEG        8.00f
 #define VOFA_NAV_YAW_CORRECT_RPM          20U
 #define VOFA_NAV_YAW_CORRECT_ACC          10U

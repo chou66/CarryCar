@@ -429,13 +429,13 @@ uint8_t Motor1_RevTest(void)
 {
     uint8_t status = 0U;
 
-    if (Emm_V5_Read_Status(5U, &status, 60U) == 0U)
+    if (Emm_V5_Read_Status(2U, &status, 60U) == 0U)
         return 0U;                      /* no CAN reply: bus still dead */
 
-    Emm_V5_En_Control(5U, true, false);
+    Emm_V5_En_Control(2U, true, false);
     HAL_Delay(4U);
 
-    Emm_V5_Pos_Control(5U, 1U, 30U, 10U,
+    Emm_V5_Pos_Control(2U, 1U, 30U, 10U,
                        1U * (uint32_t)CHASSIS_MOTOR_PULSES_PER_REV, false, false);
 
     return 1U;

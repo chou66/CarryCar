@@ -88,11 +88,17 @@
  *   为 0.45*0.06118 = 2.75 cm，说明当前地面下左移原始前漂约为 0，
  *   原系数变成纯过补偿，因此左移系数清零，待 0.85 m 边长复测微调。
  *
+ * 2026-10-02 复测：
+ *   +X 右移 0.45 m 净后退约 1.0 cm。当前 -0.0165 在 0.45 m 已含
+ *   -0.74 cm 后退命令，反推原始后漂仅约 0.26 cm/0.45 m，原系数过补偿。
+ *   新系数 = 旧系数 - 净漂移/距离 = -0.0165 + 0.010/0.45 = +0.0057
+ *   （改为小幅前进命令抵消轻微后漂）。
+ *
  * 系数单位：m(Y correction) / m(strafe command)。
  * 这里修正的是车体中心的前后漂移；左右差值对应的偏航由下面
  * MOTION_CAL_X_*_TO_THETA 单独补偿。
  */
-#define MOTION_CAL_X_POS_TO_Y      (-0.0165f)
+#define MOTION_CAL_X_POS_TO_Y      (0.0057f)
 #define MOTION_CAL_X_NEG_TO_Y              (0.0f)
 
 /*
@@ -107,22 +113,41 @@
  * 否则偏左可能是偏航造成的，先修航向再补位置。
  */
 #define MOTION_CAL_Y_POS_TO_X      (0.0f)
-#define MOTION_CAL_Y_NEG_TO_X      (0.0444f)
+#define MOTION_CAL_Y_NEG_TO_X      (0.0222f)
 
 /*
- * 横移 -> 偏航串扰补偿，单位 rad / m。
+ * 前后 -> 偏航串扰补偿，单位 rad(theta correction) / m(move command)。
  *
- * 第二轮实测（横移 0.85 m）：
- *   右移：左后 -1.5 cm，右后 0 cm
- *         -> 约 +5.3 deg CCW 偏航，因此加入 CW 负角补偿。
- *
- *   左移：左后 +1.0 cm，右后 0 cm
- *         -> 约 -3.5 deg CW 偏航，因此加入 CCW 正角补偿。
+ * 2026-10-02 实车观察：前进（+Y）0.45 m 航向约 +0.9 deg（CCW 左偏）。
+ *   MOTION_CAL_Y_POS_TO_THETA = -(0.9*pi/180)/0.45 = -0.0349
+ *   （命令负 theta 即 CW 自转抵消 CCW 漂移；theta 分量由
+ *   mecanum_inverse_pos() 与平移合成同一次位置运动，边走边转）。
+ * 2026-10-02 复测：后退（-Y）0.45 m 航向约 -0.5 deg（CW 右偏）。
+ *   MOTION_CAL_Y_NEG_TO_THETA = -(-0.5*pi/180)/0.45 = +0.0194
+ *   （命令正 theta 即 CCW 自转抵消 CW 漂移）。
  *
  * 车体坐标约定：+theta = CCW，-theta = CW。
  */
-#define MOTION_CAL_X_POS_TO_THETA          (-0.1090f)
-#define MOTION_CAL_X_NEG_TO_THETA          (+0.0727f)
+#define MOTION_CAL_Y_POS_TO_THETA          (-0.0349f)
+#define MOTION_CAL_Y_NEG_TO_THETA          (0.0194f)
+
+/*
+ * 横移 -> 偏航串扰补偿，单位 rad(theta correction) / m(strafe command)。
+ *
+ * 2026-10-02 实车观察：右移（+X）0.45 m 航向约 +0.9 deg（CCW 左偏）。
+ *   MOTION_CAL_X_POS_TO_THETA = -(0.9*pi/180)/0.45 = -0.0349
+ *   （命令负 theta 即 CW 自转抵消 CCW 漂移；与 Y->theta 同机制，
+ *   theta 分量由 mecanum_inverse_pos() 合成进同一次位置运动）。
+ *   本组此前只是定义未接线（死代码），2026-10-02 起在
+ *   chassis_motion_move() 中生效；旧场地 0.85 m 标定值已废弃。
+ *
+ * 左移（-X）系数暂无新场地数据，保持 0（旧值 +0.0727 已废弃）；
+ * 复测后按 系数 = -(测得偏航 rad) / 距离(m) 填入。
+ *
+ * 车体坐标约定：+theta = CCW，-theta = CW。
+ */
+#define MOTION_CAL_X_POS_TO_THETA          (-0.0349f)
+#define MOTION_CAL_X_NEG_TO_THETA          (0.0f)
 
 /*
  * 把本文件真正接入 MecanumConfig。

@@ -37,7 +37,7 @@ int main(void)
 
     while (1)
     {
-					(HAL_GetTick());
+		VofaDebug_Update(HAL_GetTick());
     }
 }
 
